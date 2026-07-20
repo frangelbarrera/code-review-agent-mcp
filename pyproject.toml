@@ -42,9 +42,9 @@ dev = [
 code-review-agent-mcp = "code_review_agent.server:main"
 
 [project.urls]
-Homepage = "https://github.com/frangelbarrera/code-review-mcp"
-Repository = "https://github.com/frangelbarrera/code-review-mcp"
-Issues = "https://github.com/frangelbarrera/code-review-mcp/issues"
+Homepage = "https://github.com/frangelbarrera/code-review-agent-mcp"
+Repository = "https://github.com/frangelbarrera/code-review-agent-mcp"
+Issues = "https://github.com/frangelbarrera/code-review-agent-mcp/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
