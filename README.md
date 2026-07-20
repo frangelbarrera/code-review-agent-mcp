@@ -2,7 +2,7 @@
 
 > AI code review agent that doesn't sugarcoat. If your code is bad, it tells you. Bluntly.
 
-[![CI](https://github.com/frangelbarrera/code-review-agent-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/frangelbarrera/code-review-agent-mcp/actions/workflows/ci.yml)
+[![PyPI version](https://img.shields.io/pypi/v/code-review-agent-mcp.svg)](https://pypi.org/project/code-review-agent-mcp/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
