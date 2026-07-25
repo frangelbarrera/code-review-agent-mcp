@@ -541,7 +541,7 @@ def register_review_tools(server: Server) -> None:
         except SecurityError as e:
             return [TextContent(type="text", text=_format_security_error(e))]
 
-        # Run git in thread (non-blocking) with sandboxed env
+        # Run git in thread (non-blocking) with sandboxed env.
         # --no-ext-diff prevents .git/config diff.external RCE
         # --no-textconv prevents core.textconv RCE
         # commit_ref is placed BEFORE '--' so git treats it as a revision;
@@ -549,30 +549,57 @@ def register_review_tools(server: Server) -> None:
         # silently turns the ref into a pathspec, returning empty output
         # (or, if a file with the same name exists, the wrong diff).
         # validate_git_ref already rejects refs starting with '-'.
+        #
+        # We use Popen + communicate() with an explicit timeout instead of
+        # subprocess.run so we can kill the process on timeout or task
+        # cancellation. subprocess.run's timeout kills the process on
+        # TimeoutExpired but does NOT handle CancelledError, which would
+        # leave a zombie git process running for the full 30s window.
         try:
-            result = await asyncio.to_thread(
-                subprocess.run,
+            proc = subprocess.Popen(
                 [
                     "git", "-C", str(repo_path), "show",
                     "--no-ext-diff", "--no-textconv",
                     commit_ref, "--",
                 ],
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=30,
-                check=False,
                 env=get_safe_git_env(),
             )
-        except subprocess.TimeoutExpired:
-            return [TextContent(
-                type="text",
-                text=f"## Code Review: commit {commit_ref}\n\n### Findings\n\n**CRITICAL** — `git show` timed out\n\n### Verdict\n\nGit command took too long.",
-            )]
         except FileNotFoundError:
             return [TextContent(
                 type="text",
                 text="## Code Review: git missing\n\n### Findings\n\n**CRITICAL** — git not installed\n\n### Verdict\n\nCannot run git commands.",
             )]
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                asyncio.to_thread(proc.communicate),
+                timeout=30.0,
+            )
+            result = subprocess.CompletedProcess(
+                proc.args, proc.returncode, stdout, stderr
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            try:
+                await asyncio.to_thread(proc.wait, timeout=5.0)
+            except subprocess.TimeoutExpired:
+                pass  # process will be reaped; force kill already sent
+            return [TextContent(
+                type="text",
+                text=f"## Code Review: commit {commit_ref}\n\n### Findings\n\n**CRITICAL** — `git show` timed out\n\n### Verdict\n\nGit command took too long.",
+            )]
+        except asyncio.CancelledError:
+            # Task was cancelled (e.g. client disconnected). Kill git so
+            # it does not keep running in the background.
+            proc.kill()
+            try:
+                await asyncio.to_thread(proc.wait, timeout=5.0)
+            except subprocess.TimeoutExpired:
+                pass
+            raise
 
         if result.returncode != 0:
             corr_id = secrets.token_hex(4)
