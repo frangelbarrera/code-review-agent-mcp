@@ -32,6 +32,15 @@ from ..security import (
 )
 
 
+# Hard cap on the bytes of 'git show' output we feed to the LLM. A large
+# merge commit or an initial commit importing a vendor drop can easily
+# produce tens of MB of diff, which would blow up the LLM context window
+# and the MCP server's memory. 512 KB is roughly 130k tokens, which fits
+# comfortably inside the 200k context of modern clients while leaving
+# room for the system prompt and the response.
+MAX_DIFF_SIZE = 512 * 1024
+
+
 # ---------------------------------------------------------------------------
 # Argument schemas
 # ---------------------------------------------------------------------------
@@ -498,11 +507,26 @@ def register_review_tools(server: Server) -> None:
                 text=f"## Code Review: commit {commit_ref}\n\n### Findings\n\n**MINOR** — Empty commit\nNo changes.\n\n### Verdict\n\nNothing to review.",
             )]
 
+        # Cap the diff size before sending it to the LLM. A large commit can
+        # produce megabytes of output that would exhaust the client's context
+        # window and the server's memory. Tell the model (and the user) that
+        # the diff was truncated so the verdict reflects only what was shown.
+        truncation_notice = ""
+        if len(diff) > MAX_DIFF_SIZE:
+            original_size = len(diff)
+            diff = diff[:MAX_DIFF_SIZE]
+            truncation_notice = (
+                f"\n\n[Note: the diff was truncated. 'git show' produced "
+                f"{original_size:,} bytes but only the first {MAX_DIFF_SIZE:,} "
+                f"were included here. Review the rest manually with "
+                f"`git show {commit_ref}`.]"
+            )
+
         harshness_mod = HARSHNESS_MODIFIERS.get(args.harshness, HARSHNESS_MODIFIERS["standard"])
         system = SYSTEM_PROMPT + harshness_mod
         user_prompt = (
             f"Review the following git commit (ref: {commit_ref}). Focus on what changed.\n\n"
-            f"```diff\n{diff}\n```\n\n"
+            f"```diff\n{diff}\n```\n{truncation_notice}\n\n"
             "Apply the review format."
         )
         raw_output = await _call_llm_via_sampling(server, system, user_prompt)
