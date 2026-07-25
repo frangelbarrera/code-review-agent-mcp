@@ -246,6 +246,46 @@ def validate_repo_path(repo_path: str) -> Path:
     if not git_dir.exists() and not (resolved / ".git").is_file():
         raise SecurityError(f"Not a git repository (no .git found): {resolved}")
 
+    # Reject .git symlinks pointing outside the sandbox.
+    # A symlinked .git makes 'git -C <repo>' operate on the TARGET repo's
+    # objects, bypassing the sandbox check on the actual git data source.
+    # This matters in shared environments where a user has write access to
+    # their own directory but not to other repos on the same filesystem.
+    if git_dir.is_symlink():
+        link_target = git_dir.resolve()
+        cwd = Path.cwd().resolve()
+        try:
+            link_target.relative_to(cwd)
+        except ValueError:
+            raise SecurityError(
+                f".git symlink points outside working directory: "
+                f"{git_dir} -> {link_target}"
+            )
+
+    # Reject .git gitfiles whose 'gitdir:' target points outside the sandbox.
+    # A gitfile is a regular file with a single line like 'gitdir: /path/to/.git'.
+    # git follows it just like a symlink, so the same exfiltration vector applies.
+    if git_dir.is_file():
+        try:
+            content = git_dir.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError as e:
+            raise SecurityError(f"Cannot read .git gitfile: {e}")
+        if content.startswith("gitdir:"):
+            target_str = content[len("gitdir:"):].strip()
+            gitfile_target = Path(target_str)
+            if not gitfile_target.is_absolute():
+                gitfile_target = (resolved / gitfile_target).resolve()
+            else:
+                gitfile_target = gitfile_target.resolve()
+            cwd = Path.cwd().resolve()
+            try:
+                gitfile_target.relative_to(cwd)
+            except ValueError:
+                raise SecurityError(
+                    f".git gitfile points outside working directory: "
+                    f"{git_dir} -> {gitfile_target}"
+                )
+
     # Reject symlinks pointing outside sandbox
     if raw_path.is_symlink():
         link_target = raw_path.resolve()

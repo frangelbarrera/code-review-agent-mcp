@@ -237,6 +237,119 @@ class TestValidateRepoPath:
         with pytest.raises(SecurityError, match="sandbox"):
             validate_repo_path("/usr/src")
 
+    def test_rejects_git_symlink_outside_cwd(self, monkeypatch, tmp_path):
+        """A .git symlink pointing to a repo outside the sandbox must be
+        rejected. Otherwise 'git -C <repo>' operates on the target repo's
+        objects, leaking commits the caller cannot access directly.
+        """
+        import os
+
+        # Target repo lives OUTSIDE the sandbox cwd
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        target_repo = tmp_path / "target_repo"
+        target_repo.mkdir()
+        (target_repo / ".git").mkdir()
+
+        # evil_repo lives inside the sandbox but its .git is a symlink
+        # to target_repo/.git
+        evil_repo = sandbox / "evil_repo"
+        evil_repo.mkdir()
+        os.symlink(target_repo / ".git", evil_repo / ".git")
+
+        monkeypatch.delenv("BLUNT_REVIEW_ALLOW_ABSOLUTE", raising=False)
+        monkeypatch.chdir(sandbox)
+
+        with pytest.raises(SecurityError, match=r"\.git symlink"):
+            validate_repo_path(str(evil_repo))
+
+    def test_allows_git_symlink_inside_cwd(self, monkeypatch, tmp_path):
+        """A .git symlink that stays inside the sandbox is permitted."""
+        import os
+
+        # Both repos live inside the sandbox
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        target_repo = sandbox / "target_repo"
+        target_repo.mkdir()
+        (target_repo / ".git").mkdir()
+
+        evil_repo = sandbox / "evil_repo"
+        evil_repo.mkdir()
+        os.symlink(target_repo / ".git", evil_repo / ".git")
+
+        monkeypatch.delenv("BLUNT_REVIEW_ALLOW_ABSOLUTE", raising=False)
+        monkeypatch.chdir(sandbox)
+
+        result = validate_repo_path(str(evil_repo))
+        assert result == evil_repo.resolve()
+
+    def test_rejects_gitfile_outside_cwd(self, monkeypatch, tmp_path):
+        """A .git gitfile whose 'gitdir:' points outside the sandbox must be
+        rejected. Git follows gitfiles just like symlinks, so the same
+        exfiltration vector applies.
+        """
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        target_repo = tmp_path / "target_repo"
+        target_repo.mkdir()
+        (target_repo / ".git").mkdir()
+
+        evil_repo = sandbox / "evil_repo"
+        evil_repo.mkdir()
+        (evil_repo / ".git").write_text(f"gitdir: {target_repo / '.git'}\n")
+
+        monkeypatch.delenv("BLUNT_REVIEW_ALLOW_ABSOLUTE", raising=False)
+        monkeypatch.chdir(sandbox)
+
+        with pytest.raises(SecurityError, match=r"gitfile"):
+            validate_repo_path(str(evil_repo))
+
+    def test_allows_gitfile_inside_cwd(self, monkeypatch, tmp_path):
+        """A .git gitfile pointing to a path inside the sandbox is permitted."""
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        target_repo = sandbox / "target_repo"
+        target_repo.mkdir()
+        (target_repo / ".git").mkdir()
+
+        evil_repo = sandbox / "evil_repo"
+        evil_repo.mkdir()
+        (evil_repo / ".git").write_text(f"gitdir: {target_repo / '.git'}\n")
+
+        monkeypatch.delenv("BLUNT_REVIEW_ALLOW_ABSOLUTE", raising=False)
+        monkeypatch.chdir(sandbox)
+
+        result = validate_repo_path(str(evil_repo))
+        assert result == evil_repo.resolve()
+
+    def test_allows_regular_gitfile_without_gitdir(self, monkeypatch, tmp_path):
+        """A .git file that is not a gitfile (no 'gitdir:' prefix) must not
+        trigger the gitfile sandbox check. The validator should accept it
+        (it's a regular file matching the existing existence check) without
+        raising a symlink/gitfile SecurityError.
+        """
+        sandbox = tmp_path / "sandbox"
+        sandbox.mkdir()
+        evil_repo = sandbox / "evil_repo"
+        evil_repo.mkdir()
+        (evil_repo / ".git").write_text("random content\n")
+
+        monkeypatch.delenv("BLUNT_REVIEW_ALLOW_ABSOLUTE", raising=False)
+        monkeypatch.chdir(sandbox)
+
+        # Must NOT raise a symlink or gitfile SecurityError. (It may pass
+        # validation entirely; downstream 'git -C' will fail at runtime if
+        # the file isn't a real gitfile, which is acceptable.)
+        try:
+            result = validate_repo_path(str(evil_repo))
+            assert result == evil_repo.resolve()
+        except SecurityError as e:
+            # If a SecurityError is raised, it must not be the symlink/gitfile one
+            msg = str(e)
+            assert "symlink" not in msg.lower()
+            assert "gitfile" not in msg.lower()
+
 
 class TestSafeGitEnv:
     """Test the safe git environment."""
