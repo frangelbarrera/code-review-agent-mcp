@@ -46,6 +46,29 @@ class TestReviewCodeArgs:
         with pytest.raises(Exception):
             ReviewCodeArgs(code="x", harshness="invalid")
 
+    def test_rejects_multibyte_bypass_of_size_cap(self):
+        """Size cap must measure UTF-8 bytes, not character count.
+
+        A payload of N emoji chars is 4N UTF-8 bytes. The previous
+        validator used len(v) (chars) and accepted 10M emoji = 40MB.
+        """
+        from code_review_agent.security import MAX_FILE_SIZE
+        # Build a payload that is under MAX_FILE_SIZE chars but well over
+        # MAX_FILE_SIZE bytes when encoded as UTF-8.
+        emoji = "🚀"  # 1 char, 4 bytes in UTF-8
+        # Use MAX_FILE_SIZE//4 + 1 emoji -> ~MAX_FILE_SIZE bytes + 4 bytes
+        payload = emoji * (MAX_FILE_SIZE // 4 + 1)
+        # Sanity: char count under cap, byte count over cap
+        assert len(payload) <= MAX_FILE_SIZE
+        assert len(payload.encode("utf-8")) > MAX_FILE_SIZE
+        with pytest.raises(Exception, match="too large"):
+            ReviewCodeArgs(code=payload)
+
+    def test_accepts_normal_sized_code(self):
+        """Sanity: normal-sized code is accepted."""
+        args = ReviewCodeArgs(code="x = 1\n" * 100)
+        assert "x = 1" in args.code
+
 
 class TestReviewFileArgs:
     """Test argument validation for review_file."""

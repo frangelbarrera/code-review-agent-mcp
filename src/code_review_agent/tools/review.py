@@ -72,8 +72,11 @@ class ReviewCodeArgs(BaseModel):
     @field_validator("code")
     @classmethod
     def _code_size(cls, v: str) -> str:
-        if len(v) > MAX_FILE_SIZE:
-            raise ValueError(f"Code too large: {len(v)} bytes (max {MAX_FILE_SIZE})")
+        # Measure byte length, not character count. A 10MB cap on len(v)
+        # (chars) accepts a 40MB UTF-8 payload built from 4-byte emoji.
+        size = len(v.encode("utf-8", errors="replace"))
+        if size > MAX_FILE_SIZE:
+            raise ValueError(f"Code too large: {size} bytes (max {MAX_FILE_SIZE})")
         return v
 
 
@@ -99,8 +102,9 @@ class ReviewDiffArgs(BaseModel):
     @field_validator("diff")
     @classmethod
     def _diff_size(cls, v: str) -> str:
-        if len(v) > MAX_FILE_SIZE:
-            raise ValueError(f"Diff too large: {len(v)} bytes (max {MAX_FILE_SIZE})")
+        size = len(v.encode("utf-8", errors="replace"))
+        if size > MAX_FILE_SIZE:
+            raise ValueError(f"Diff too large: {size} bytes (max {MAX_FILE_SIZE})")
         return v
 
 
