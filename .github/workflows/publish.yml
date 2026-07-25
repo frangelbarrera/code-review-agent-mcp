@@ -21,6 +21,16 @@ on:
   push:
     tags:
       - "v*"
+  # Allow manual runs from the Actions tab. Useful for publishing an
+  # existing tag (e.g. when the workflow was added after the tag was
+  # pushed) or for re-publishing a yanked release.
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref (tag or branch) to build and publish"
+        required: true
+        default: "v0.2.0"
+        type: string
 
 permissions:
   contents: read
@@ -32,6 +42,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.ref || github.ref }}
           persist-credentials: false
 
       - uses: actions/setup-python@v5
