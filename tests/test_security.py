@@ -503,3 +503,30 @@ class TestSensitivePathPatterns:
 
     def test_proc_environ_exists(self):
         assert "/proc/self/environ" in SENSITIVE_PATH_PATTERNS
+
+    @pytest.mark.parametrize("pattern", [
+        # Originals (still required)
+        "/etc/passwd", "/etc/shadow", "/etc/sudoers",
+        "/.ssh/", "/.aws/", "/.gnupg/",
+        "/.docker/", "/.kube/", "/.npmrc", "/.pypirc",
+        "/.git-credentials", "/.env", "/.netrc",
+        "/proc/self/environ", "/proc/self/cmdline",
+        "/proc/", "/sys/",
+        # Expanded coverage
+        "/etc/shadow-", "/etc/gshadow", "/etc/sudoers.d/",
+        "/etc/cron.d/", "/etc/crontab",
+        "/etc/nginx/", "/etc/ssl/", "/etc/ssl/private/",
+        "/etc/mysql/", "/etc/postgresql/", "/etc/redis/",
+        "/.config/aws/", "/.config/gcloud/", "/.config/git/credentials",
+        "/.gitconfig",
+        "/.bashrc", "/.bash_history", "/.bash_profile",
+        "/.zshrc", "/.zsh_history", "/.profile",
+        "/.pgpass", "/.my.cnf",
+        "/.terraformrc", "/.terraform.d/", "/.ansible/",
+        "/.mozilla/", "/.config/google-chrome/",
+        "/.vscode/", "/.idea/",
+    ])
+    def test_pattern_present(self, pattern):
+        assert pattern in SENSITIVE_PATH_PATTERNS, (
+            f"{pattern!r} missing from SENSITIVE_PATH_PATTERNS"
+        )

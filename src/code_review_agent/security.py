@@ -20,19 +20,54 @@ MAX_FILE_SIZE = 10 * 1024 * 1024
 
 # Sensitive paths that review_file will REFUSE to read
 SENSITIVE_PATH_PATTERNS = [
+    # System account / shadow databases
     "/etc/passwd",
     "/etc/shadow",
+    "/etc/shadow-",
+    "/etc/gshadow",
     "/etc/sudoers",
+    "/etc/sudoers.d/",
+    # System services that often hold secrets
+    "/etc/cron.d/",
+    "/etc/crontab",
+    "/etc/nginx/",
+    "/etc/ssl/",
+    "/etc/ssl/private/",
+    "/etc/mysql/",
+    "/etc/postgresql/",
+    "/etc/redis/",
+    # User-home dotfiles with credentials or keys
     "/.ssh/",  # SSH keys
     "/.aws/",  # AWS credentials
+    "/.config/aws/",
+    "/.config/gcloud/",
+    "/.config/git/credentials",
     "/.gnupg/",  # GPG keys
     "/.docker/",  # Docker config
     "/.kube/",  # Kubernetes config
     "/.npmrc",  # npm tokens
     "/.pypirc",  # PyPI tokens
     "/.git-credentials",  # Git credentials
+    "/.gitconfig",
     "/.env",  # Environment files with secrets
     "/.netrc",  # Netrc with credentials
+    "/.bashrc",
+    "/.bash_history",
+    "/.bash_profile",
+    "/.zshrc",
+    "/.zsh_history",
+    "/.profile",
+    "/.pgpass",
+    "/.my.cnf",
+    "/.terraformrc",
+    "/.terraform.d/",
+    "/.ansible/",
+    # Browser / IDE profiles can contain tokens and history
+    "/.mozilla/",
+    "/.config/google-chrome/",
+    "/.vscode/",
+    "/.idea/",
+    # Process introspection
     "/proc/self/environ",  # Process environment (self)
     "/proc/self/cmdline",  # Process command line (self)
     "/proc/",  # Any /proc/<PID>/ path (after resolve, /proc/self becomes /proc/<PID>)
