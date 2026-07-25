@@ -92,14 +92,40 @@ def validate_file_path(file_path: str) -> Path:
     except (OSError, RuntimeError) as e:
         raise SecurityError(f"Cannot resolve path: {e}")
 
-    # Check against sensitive path patterns
-    # Normalize to forward slashes for pattern matching (Windows uses backslashes)
+    # Check against sensitive path patterns using component-aware matching.
+    # Substring matching ('pattern in resolved_str') produces false positives
+    # on legitimate paths like 'tests/etc/passwd.py' (matches '/etc/passwd')
+    # or 'app/.env.example' (matches '/.env').
+    #
+    # Two pattern families exist in SENSITIVE_PATH_PATTERNS:
+    #   * Absolute system paths: '/etc/passwd', '/proc/', '/sys/'. These
+    #     must match only at the root of the resolved path.
+    #   * Home-relative dotfile patterns: '/.ssh/', '/.env', '/.aws/'.
+    #     These must match whenever the named dotfile component appears
+    #     anywhere in the path (the user's home is just one of several
+    #     places these can live).
     resolved_str = str(resolved).replace("\\", "/")
+    components = [c for c in resolved_str.split("/") if c]
     for pattern in SENSITIVE_PATH_PATTERNS:
-        if pattern in resolved_str:
-            raise SecurityError(
-                f"Refusing to read sensitive path (matches pattern '{pattern}'): {resolved_str}"
-            )
+        token = pattern.strip("/")
+        if not token:
+            continue
+        if pattern.startswith("/."):
+            # Home-relative dotfile pattern. Match if any path component
+            # equals the pattern's token.
+            if token in components:
+                raise SecurityError(
+                    f"Refusing to read sensitive path (matches pattern "
+                    f"'{pattern}'): {resolved_str}"
+                )
+        else:
+            # Absolute system path pattern. Match only if the resolved
+            # path starts with the pattern (directory prefix) or equals it.
+            if resolved_str == pattern.rstrip("/") or resolved_str.startswith(pattern):
+                raise SecurityError(
+                    f"Refusing to read sensitive path (matches pattern "
+                    f"'{pattern}'): {resolved_str}"
+                )
 
     # Sandbox: only allow paths under the current working directory
     # unless explicitly overridden via env var (for power users)

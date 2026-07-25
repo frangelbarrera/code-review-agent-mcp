@@ -205,6 +205,61 @@ class TestValidateFilePath:
         with pytest.raises(SecurityError, match="too large"):
             validate_file_path("large.py")
 
+    # Component-aware matching: legitimate paths that previously matched
+    # sensitive patterns via substring must now be accepted.
+    def test_legit_etc_passwd_subdir_passes(self, monkeypatch, tmp_path):
+        """A file named 'passwd.py' under a local 'etc/' directory must NOT
+        match the '/etc/passwd' sensitive pattern (substring matching
+        produced this false positive)."""
+        legit = tmp_path / "tests" / "etc" / "passwd.py"
+        legit.parent.mkdir(parents=True)
+        legit.write_text("x = 1\n")
+        monkeypatch.chdir(tmp_path)
+        assert validate_file_path(str(legit)) == legit.resolve()
+
+    def test_legit_env_example_passes(self, monkeypatch, tmp_path):
+        """A file named '.env.example' must NOT match the '/.env' pattern."""
+        legit = tmp_path / "app" / ".env.example"
+        legit.parent.mkdir(parents=True)
+        legit.write_text("EXAMPLE=1\n")
+        monkeypatch.chdir(tmp_path)
+        assert validate_file_path(str(legit)) == legit.resolve()
+
+    def test_legit_proc_subdir_passes(self, monkeypatch, tmp_path):
+        """A 'proc' directory inside the sandbox must NOT match '/proc/'."""
+        legit = tmp_path / "docs" / "proc" / "info.md"
+        legit.parent.mkdir(parents=True)
+        legit.write_text("# Process docs\n")
+        monkeypatch.chdir(tmp_path)
+        assert validate_file_path(str(legit)) == legit.resolve()
+
+    def test_legit_ssh_readme_passes(self, monkeypatch, tmp_path):
+        """A README inside a local 'ssh' directory must NOT match '/.ssh/'
+        (which only matches the dotfile component '.ssh')."""
+        legit = tmp_path / "src" / "ssh" / "README.md"
+        legit.parent.mkdir(parents=True)
+        legit.write_text("# SSH docs\n")
+        monkeypatch.chdir(tmp_path)
+        assert validate_file_path(str(legit)) == legit.resolve()
+
+    def test_real_dotenv_still_blocked(self, monkeypatch, tmp_path):
+        """An actual '.env' file must still be rejected."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("SECRET=1\n")
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SecurityError, match="sensitive"):
+            validate_file_path(str(env_file))
+
+    def test_real_ssh_dir_still_blocked(self, monkeypatch, tmp_path):
+        """An actual '.ssh/id_rsa' file must still be rejected."""
+        ssh_dir = tmp_path / ".ssh"
+        ssh_dir.mkdir()
+        key = ssh_dir / "id_rsa"
+        key.write_text("PRIVATE")
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SecurityError, match="sensitive"):
+            validate_file_path(str(key))
+
 
 class TestReadFileToctouSafe:
     """Verify the TOCTOU-safe read helper used by review_file.
