@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -173,20 +174,45 @@ def _line_number_code(code: str) -> str:
     return "\n".join(f"{i:4d} | {line}" for i, line in enumerate(lines, 1))
 
 
+def _wrap_untrusted(content: str) -> str:
+    """Wrap untrusted content in a randomly-tokenized XML boundary.
+
+    The system prompt instructs the model to treat anything inside
+    <untrusted_content> tags as data, not instructions. A per-invocation
+    random token in the opening AND closing tag prevents an attacker
+    from closing the boundary with a hard-coded ``</untrusted_content>``
+    string inside the payload — the closing tag must match the opening
+    tag's id, which the attacker cannot predict.
+    """
+    token = secrets.token_hex(8)
+    return (
+        f"<untrusted_content id=\"{token}\">\n{content}\n"
+        f"</untrusted_content id=\"{token}\">"
+    )
+
+
 def _build_review_prompt(code: str, language: str, context: str, harshness: str, source_label: str) -> str:
     """Build the user prompt for code review (system prompt is passed separately)."""
     if language == "auto":
         language = _detect_language(code)
     numbered = _line_number_code(code)
-    parts = [f"Review the following {language} code.", f"Source: {source_label}"]
+    # Build the untrusted block. Source label and caller-provided context
+    # are attacker-controllable, so they must live INSIDE the trust
+    # boundary together with the code itself. The framing outside the
+    # boundary is reduced to a neutral instruction.
+    untrusted_lines = [f"Source: {source_label}"]
     if context:
-        parts.append(f"\nContext: {context}")
-    parts.append(f"\n```{language}\n{numbered}\n```")
-    parts.append(
+        untrusted_lines.append(f"Context: {context}")
+    untrusted_lines.append(f"```{language}\n{numbered}\n```")
+    untrusted_block = "\n".join(untrusted_lines)
+
+    parts = [
+        f"Review the following {language} code.",
+        f"\n{_wrap_untrusted(untrusted_block)}",
         "\nApply the review format from your instructions. "
         "Every finding needs a severity label, a line citation, and a fix. "
-        "End with a Verdict section."
-    )
+        "End with a Verdict section.",
+    ]
     return "\n".join(parts)
 
 
@@ -446,7 +472,7 @@ def register_review_tools(server: Server) -> None:
         system = SYSTEM_PROMPT + harshness_mod
         user_prompt = (
             "Review the following git diff. Focus on what changed.\n\n"
-            f"```diff\n{args.diff}\n```\n\n"
+            f"{_wrap_untrusted(f'```diff\n{args.diff}\n```')}\n\n"
             "Apply the review format. Every finding needs a severity label, line citation, and fix."
         )
         raw_output = await _call_llm_via_sampling(server, system, user_prompt)
@@ -525,8 +551,8 @@ def register_review_tools(server: Server) -> None:
         harshness_mod = HARSHNESS_MODIFIERS.get(args.harshness, HARSHNESS_MODIFIERS["standard"])
         system = SYSTEM_PROMPT + harshness_mod
         user_prompt = (
-            f"Review the following git commit (ref: {commit_ref}). Focus on what changed.\n\n"
-            f"```diff\n{diff}\n```\n{truncation_notice}\n\n"
+            "Review the following git commit. Focus on what changed.\n\n"
+            f"{_wrap_untrusted(f'Commit ref: {commit_ref}\n```diff\n{diff}\n```')}\n{truncation_notice}\n\n"
             "Apply the review format."
         )
         raw_output = await _call_llm_via_sampling(server, system, user_prompt)
