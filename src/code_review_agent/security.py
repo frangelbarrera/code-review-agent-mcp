@@ -43,7 +43,11 @@ SENSITIVE_PATH_PATTERNS = [
 # Allows: hex hashes, HEAD, HEAD~1, HEAD^, branch names, tag names, refs/heads/x
 # Blocks: anything starting with - (option injection), shell metachars, ..
 # Includes ^ for HEAD^ (parent), ~ for HEAD~1 (nth parent)
-_SAFE_GIT_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/+=:~^*-]{0,199}$")
+# ':' is INTENTIONALLY EXCLUDED. Git interprets <treeish>:<path> as
+# "retrieve this file from this treeish", which would let callers ask
+# review_commit to exfiltrate arbitrary files from git history (e.g.
+# HEAD:creds.txt, main:secret.txt, HEAD~5:deleted/file.txt).
+_SAFE_GIT_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/+=~^*-]{0,199}$")
 
 
 class SecurityError(Exception):
@@ -150,13 +154,15 @@ def validate_git_ref(commit_ref: str) -> str:
     Security checks:
     1. Reject empty refs
     2. Reject refs starting with - (option injection)
-    3. Only allow safe characters: [A-Za-z0-9._/+=:~-]
+    3. Only allow safe characters: [A-Za-z0-9._/+=~^-]
+       (':' is intentionally excluded — see _SAFE_GIT_REF)
     4. Max 200 characters
     5. Reject refs containing .. (path traversal in git)
 
     This prevents:
     - `--output=/tmp/evil` (write to arbitrary file)
     - `--ext-diff` (RCE via .git/config diff.external)
+    - `HEAD:creds.txt` (file exfiltration from git history)
     - Shell injection (we use shell=False, but defense in depth)
 
     Args:
@@ -185,7 +191,7 @@ def validate_git_ref(commit_ref: str) -> str:
     if not _SAFE_GIT_REF.match(commit_ref):
         raise SecurityError(
             f"Git ref contains invalid characters: {commit_ref!r}. "
-            f"Allowed: alphanumeric, . _ / + = : ~ -"
+            f"Allowed: alphanumeric, . _ / + = ~ ^ -"
         )
 
     return commit_ref

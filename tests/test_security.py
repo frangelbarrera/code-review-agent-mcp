@@ -88,6 +88,20 @@ class TestValidateGitRef:
         long_ref = "a" * 200
         assert validate_git_ref(long_ref) == long_ref
 
+    @pytest.mark.parametrize("ref", [
+        "HEAD:creds.txt",
+        "main:secret.txt",
+        "HEAD~5:deleted/file.txt",
+        "abc1234:config/database.yml",
+        "refs/heads/main:src/keys.py",
+    ])
+    def test_rejects_treeish_colon_path(self, ref):
+        """The <treeish>:<path> syntax lets callers exfiltrate arbitrary
+        files from git history via ``git show``. It must be rejected.
+        """
+        with pytest.raises(SecurityError, match="invalid characters"):
+            validate_git_ref(ref)
+
 
 class TestValidateFilePath:
     """Test file path validation — prevents path traversal and sensitive file access."""
