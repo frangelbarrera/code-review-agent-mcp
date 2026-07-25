@@ -270,8 +270,12 @@ def _detect_hallucination_signals(text: str) -> list[str]:
             )
             break  # only report once
 
-    # Too many findings without line citations (quota padding signal)
-    findings = re.findall(r"\*\*(?:CRITICAL|MAJOR|MINOR|NIT)\*\*", text)
+    # Too many findings without line citations (quota padding signal).
+    # Use re.IGNORECASE to stay consistent with _SEVERITY_RE (which is
+    # case-insensitive). Without IGNORECASE, lowercase **critical** labels
+    # bypassed this check even though they counted as severity labels
+    # elsewhere in the validator.
+    findings = re.findall(r"\*\*(?:CRITICAL|MAJOR|MINOR|NIT)\*\*", text, re.IGNORECASE)
     citations = len(_LINE_CITATION_RE.findall(text))
     if len(findings) > 5 and citations < len(findings):
         signals.append(

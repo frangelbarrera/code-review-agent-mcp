@@ -14,6 +14,7 @@ from code_review_agent.validators.post_processor import (
     clean_output,
     validate_output,
     enforce_blunt_output,
+    _detect_hallucination_signals,
 )
 
 
@@ -225,3 +226,33 @@ Do not merge.
         cleaned, validation = enforce_blunt_output(raw)
         assert "might want to consider" not in cleaned.lower()
         assert validation.is_valid or validation.hedge_count > 0
+
+
+class TestDetectHallucinationSignalsCaseSensitivity:
+    """Regression: the quota-padding check must use re.IGNORECASE to stay
+    consistent with _SEVERITY_RE. Without IGNORECASE, lowercase
+    **critical** labels bypassed the check.
+    """
+
+    def test_uppercase_severity_labels_trigger_quota_padding(self):
+        """7+ uppercase **CRITICAL** labels with no citations must trigger
+        the quota-padding signal."""
+        text = "\n".join([f"**CRITICAL** bug {i}" for i in range(7)])
+        signals = _detect_hallucination_signals(text)
+        assert any("quota padding" in s.lower() for s in signals), \
+            "Uppercase severity labels must trigger quota-padding check"
+
+    def test_lowercase_severity_labels_trigger_quota_padding(self):
+        """7+ lowercase **critical** labels with no citations must ALSO
+        trigger the quota-padding signal (regression for the case-
+        sensitivity bug)."""
+        text = "\n".join([f"**critical** bug {i}" for i in range(7)])
+        signals = _detect_hallucination_signals(text)
+        assert any("quota padding" in s.lower() for s in signals), \
+            "Lowercase severity labels must trigger quota-padding check"
+
+    def test_few_findings_do_not_trigger(self):
+        """Fewer than 6 findings must not trigger the quota-padding signal."""
+        text = "\n".join([f"**CRITICAL** bug {i}" for i in range(3)])
+        signals = _detect_hallucination_signals(text)
+        assert not any("quota padding" in s.lower() for s in signals)
