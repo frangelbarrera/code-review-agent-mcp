@@ -485,6 +485,25 @@ class TestSafeGitEnv:
         env = get_safe_git_env()
         assert "HOME" in env
 
+    @pytest.mark.parametrize("key,expected", [
+        ("GIT_SSH_COMMAND", ""),
+        ("GIT_SSH", ""),
+        ("GIT_PROXY_COMMAND", ""),
+        ("GIT_CREDENTIAL_HELPER", ""),
+        ("GIT_ASKPASS", ""),
+        ("SSH_ASKPASS", ""),
+        ("GIT_TERMINAL_PROMPT", "0"),
+        ("GIT_ATTR_NOSYSTEM", "1"),
+    ])
+    def test_clears_helper_env_vars(self, key, expected):
+        """Defense in depth: helper environment variables that git could
+        use to invoke external programs (SSH, askpass, credential helpers,
+        proxy) must be cleared or set to a safe value.
+        """
+        env = get_safe_git_env()
+        assert key in env, f"{key} missing from safe git env"
+        assert env[key] == expected, f"{key}={env[key]!r}, expected {expected!r}"
+
 
 class TestSensitivePathPatterns:
     """Test that all sensitive path patterns are covered."""

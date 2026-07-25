@@ -365,15 +365,31 @@ def get_safe_git_env() -> dict:
     """Return a sanitized environment for git subprocess calls.
 
     Prevents .git/config attacks (diff.external, core.askpass, etc.)
-    by disabling global and system git config.
+    by disabling global and system git config. Also clears the
+    environment variables that git would otherwise use to invoke
+    external helpers (SSH, credential helpers, askpass, proxy). The
+    current call sites only run 'git show' against a local ref, so
+    none of those helpers are required; clearing them is defense in
+    depth in case a future call site triggers network access.
 
     Returns:
-        Environment dict with git config disabled.
+        Environment dict with git config disabled and helper vars
+        cleared.
     """
     env = {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "HOME": os.environ.get("HOME", "/tmp"),
+        # Disable global and system git config
         "GIT_CONFIG_NOSYSTEM": "1",  # Ignore /etc/gitconfig
-        "GIT_CONFIG_GLOBAL": "/dev/null",  # Ignore ~/.gitconfig
+        "GIT_CONFIG_GLOBAL": "/dev/null",  # Ignore ~/.gitconfig + ~/.config/git/config
+        # Defense in depth: block network / credential / askpass vectors
+        "GIT_SSH_COMMAND": "",
+        "GIT_SSH": "",
+        "GIT_PROXY_COMMAND": "",
+        "GIT_CREDENTIAL_HELPER": "",
+        "GIT_ASKPASS": "",
+        "SSH_ASKPASS": "",
+        "GIT_TERMINAL_PROMPT": "0",  # never prompt for credentials
+        "GIT_ATTR_NOSYSTEM": "1",    # ignore /etc/gitattributes (filter commands)
     }
     return env
