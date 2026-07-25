@@ -11,6 +11,7 @@ inputs against injection attacks.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import secrets
 import stat
@@ -32,6 +33,9 @@ from ..security import (
     get_safe_git_env,
     MAX_FILE_SIZE,
 )
+
+
+logger = logging.getLogger("code-review-agent-mcp")
 
 
 # Hard cap on the bytes of 'git show' output we feed to the LLM. A large
@@ -226,7 +230,13 @@ async def _call_llm_via_sampling(server: Server, system_prompt: str, user_prompt
 
     Uses the client's LLM (Claude/GPT/etc.) — no API key needed.
     Falls back to an error message if sampling is not supported.
+
+    On failure the fallback message contains a short correlation id that
+    the operator can use to find the detailed diagnostics in the server
+    logs. The raw exception text is logged server-side only and never
+    returned to the client.
     """
+    corr_id = secrets.token_hex(4)
     try:
         result = await asyncio.wait_for(
             server.request_context.session.request(
@@ -253,17 +263,20 @@ async def _call_llm_via_sampling(server: Server, system_prompt: str, user_prompt
                 return result.content.text
         return str(result.content if hasattr(result, "content") else result)
     except asyncio.TimeoutError:
+        logger.warning("sampling timeout [corr=%s]", corr_id)
         return (
             "## Code Review: snippet\n\n### Findings\n\n"
             "**CRITICAL** `llm` — LLM sampling timed out\n"
-            "LLM sampling timed out after 120 seconds. The code was NOT reviewed.\n\n"
+            f"LLM sampling timed out after 120 seconds. The code was NOT reviewed. "
+            f"[ref={corr_id}]\n\n"
             "### Verdict\n\nCannot review — LLM timeout. Do not merge."
         )
     except Exception as e:
+        logger.exception("sampling error [corr=%s]", corr_id)
         return (
             "## Code Review: snippet\n\n### Findings\n\n"
             "**CRITICAL** `llm` — LLM sampling unavailable\n"
-            f"LLM sampling failed: {type(e).__name__}. "
+            f"LLM sampling failed: {type(e).__name__}. See server logs [ref={corr_id}]. "
             "Configure your MCP client (Claude Desktop, Cursor) to enable sampling. "
             "The code was NOT reviewed.\n\n"
             "### Verdict\n\nCannot review without LLM. Do not merge."
@@ -401,12 +414,14 @@ def register_review_tools(server: Server) -> None:
         except SecurityError as e:
             return [TextContent(type="text", text=_format_security_error(e))]
         except Exception as e:
+            corr_id = secrets.token_hex(4)
+            logger.exception("tool '%s' error [corr=%s]", name, corr_id)
             return [TextContent(
                 type="text",
                 text=(
                     f"## Code Review: error\n\n### Findings\n\n"
                     f"**CRITICAL** `internal` — Tool error\n"
-                    f"{type(e).__name__}: {e}\n\n"
+                    f"Internal error. See server logs [ref={corr_id}].\n\n"
                     f"### Verdict\n\nCannot review — internal error."
                 ),
             )]
@@ -560,9 +575,19 @@ def register_review_tools(server: Server) -> None:
             )]
 
         if result.returncode != 0:
+            corr_id = secrets.token_hex(4)
+            logger.warning(
+                "git show failed [ref=%s rc=%s stderr=%r]",
+                commit_ref, result.returncode, result.stderr,
+            )
             return [TextContent(
                 type="text",
-                text=f"## Code Review: commit {commit_ref}\n\n### Findings\n\n**CRITICAL** `git` — Command failed\n{result.stderr}\n\n### Verdict\n\nGit command failed.",
+                text=(
+                    f"## Code Review: commit {commit_ref}\n\n### Findings\n\n"
+                    f"**CRITICAL** `git` — Command failed\n"
+                    f"git returned non-zero exit code. See server logs [ref={corr_id}].\n\n"
+                    f"### Verdict\n\nGit command failed."
+                ),
             )]
 
         diff = result.stdout

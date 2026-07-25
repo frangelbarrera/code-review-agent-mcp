@@ -127,8 +127,11 @@ class TestLLMCallMocking:
         assert "**CLEAN**" not in result
         assert "NOT reviewed" in result
         assert "Do not merge" in result
-        # Must not leak the raw exception message (regression guard for LOW #6)
+        # Must not leak the raw exception message (regression guard for
+        # internal-info disclosure)
         assert "No LLM available" not in result
+        # Must include a short correlation id reference for log lookup
+        assert "[ref=" in result
 
     @pytest.mark.asyncio
     async def test_call_llm_via_sampling_handles_timeout(self):
