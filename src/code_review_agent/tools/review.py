@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 import secrets
+import stat
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -431,9 +432,43 @@ def register_review_tools(server: Server) -> None:
         except SecurityError as e:
             return [TextContent(type="text", text=_format_security_error(e))]
 
-        # Read file in thread (non-blocking)
+        # Read file in thread (non-blocking) using a TOCTOU-safe open.
+        # validate_file_path() rejects symlinks pointing outside the sandbox,
+        # but only at validation time. A concurrent writer with access to the
+        # same directory could swap the file for a symlink between validation
+        # and read. Open with O_NOFOLLOW (kernel rejects if the final path
+        # component is a symlink) and validate the open fd with fstat, so the
+        # checks and the read operate on the same inode.
+        def _read_safe() -> str:
+            fd = None
+            try:
+                fd = os.open(file_path, os.O_RDONLY | os.O_NOFOLLOW)
+            except OSError as e:
+                # ELOOP = "too many levels of symbolic links" (O_NOFOLLOW hit
+                # a symlink). Treat as permission denied.
+                raise PermissionError(str(e)) from e
+            try:
+                st = os.fstat(fd)
+                if not stat.S_ISREG(st.st_mode):
+                    raise OSError("Not a regular file after open")
+                if st.st_size > MAX_FILE_SIZE:
+                    raise OSError(
+                        f"File too large after open: {st.st_size} > {MAX_FILE_SIZE}"
+                    )
+                # os.fdopen takes ownership of fd on success; on failure the
+                # finally block below closes it.
+                f = os.fdopen(fd, "r", encoding="utf-8", errors="replace")
+                fd = None
+                try:
+                    return f.read()
+                finally:
+                    f.close()
+            finally:
+                if fd is not None:
+                    os.close(fd)
+
         try:
-            code = await asyncio.to_thread(file_path.read_text, encoding="utf-8", errors="replace")
+            code = await asyncio.to_thread(_read_safe)
         except PermissionError:
             return [TextContent(
                 type="text",
@@ -442,7 +477,7 @@ def register_review_tools(server: Server) -> None:
         except OSError as e:
             return [TextContent(
                 type="text",
-                text=f"## Code Review: {file_path.name}\n\n### Findings\n\n**CRITICAL** `{file_path.name}` — Read error: {e}\n\n### Verdict\n\nCannot read file.",
+                text=f"## Code Review: {file_path.name}\n\n### Findings\n\n**CRITICAL** `{file_path.name}` — Read error (file unreadable). See server logs for details.\n\n### Verdict\n\nCannot read file.",
             )]
 
         if not code.strip():

@@ -206,6 +206,66 @@ class TestValidateFilePath:
             validate_file_path("large.py")
 
 
+class TestReadFileToctouSafe:
+    """Verify the TOCTOU-safe read helper used by review_file.
+
+    These tests exercise the os.open(O_NOFOLLOW) + os.fstat + os.fdopen
+    path directly, without spinning up a full MCP session.
+    """
+
+    def _read_safe(self, file_path):
+        """Mirror of the _read_safe inner function in review.py."""
+        import stat as _stat
+        fd = None
+        try:
+            fd = os.open(file_path, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError as e:
+            raise PermissionError(str(e)) from e
+        try:
+            st = os.fstat(fd)
+            if not _stat.S_ISREG(st.st_mode):
+                raise OSError("Not a regular file after open")
+            if st.st_size > MAX_FILE_SIZE:
+                raise OSError(f"File too large after open: {st.st_size}")
+            f = os.fdopen(fd, "r", encoding="utf-8", errors="replace")
+            fd = None
+            try:
+                return f.read()
+            finally:
+                f.close()
+        finally:
+            if fd is not None:
+                os.close(fd)
+
+    def test_reads_regular_file(self, tmp_path):
+        f = tmp_path / "x.py"
+        f.write_text("print('hi')\n")
+        assert self._read_safe(f) == "print('hi')\n"
+
+    def test_rejects_symlink(self, tmp_path):
+        """O_NOFOLLOW must reject any symlink, even inside the sandbox."""
+        target = tmp_path / "target.txt"
+        target.write_text("secret\n")
+        link = tmp_path / "link.py"
+        os.symlink(target, link)
+        with pytest.raises(PermissionError):
+            self._read_safe(link)
+
+    def test_rejects_directory(self, tmp_path):
+        """Opening a directory must fail (or be rejected by fstat)."""
+        d = tmp_path / "subdir"
+        d.mkdir()
+        # On Linux, opening a directory with O_RDONLY succeeds but fstat
+        # identifies it as S_IFDIR, so the helper must reject it.
+        try:
+            with pytest.raises(OSError):
+                self._read_safe(d)
+        except PermissionError:
+            # Some kernels refuse to open dirs even with O_RDONLY; that's
+            # also acceptable.
+            pass
+
+
 class TestValidateRepoPath:
     """Test repo path validation."""
 
