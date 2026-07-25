@@ -1,0 +1,95 @@
+name: Publish to PyPI
+
+# Triggered when a tag matching `v*` is pushed (e.g. v0.2.0, v1.0.0).
+# Uses PyPI Trusted Publishing (OIDC) — no API tokens are stored in
+# GitHub. PyPI verifies the GitHub Actions OIDC identity against the
+# publisher registered at:
+# https://pypi.org/manage/project/code-review-agent-mcp/settings/publishing/
+#
+# Requirements (one-time setup):
+#   1. PyPI: register a "Pending Publisher" or "Publisher" with:
+#        Owner:       frangelbarrera
+#        Repository:  code-review-agent-mcp
+#        Workflow:    publish.yml
+#        Environment: pypi
+#   2. GitHub: create an environment named `pypi` under
+#        Settings -> Environments -> New environment
+#      (no secrets required — the environment only scopes deployment
+#      protection rules if desired)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install build frontend
+        run: pip install --upgrade build
+
+      - name: Build sdist and wheel
+        run: python -m build
+
+      - name: Verify metadata
+        run: |
+          python - <<'EOF'
+          import tomllib, pathlib, sys
+          pyproject = pathlib.Path("pyproject.toml").read_text(encoding="utf-8")
+          meta = tomllib.loads(pyproject)["project"]
+          print(f"name: {meta['name']}")
+          print(f"version: {meta['version']}")
+          if not meta.get("version"):
+              print("ERROR: version is missing in pyproject.toml", file=sys.stderr)
+              sys.exit(1)
+          EOF
+
+      - name: List built artifacts
+        run: ls -la dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    # The `pypi` environment must exist under
+    # Settings -> Environments in the GitHub repo. It carries no
+    # secrets; it only scopes protection rules if you want any.
+    environment: pypi
+    permissions:
+      # Required for Trusted Publishing (OIDC). Without this, PyPI
+      # cannot receive the signed identity token from GitHub Actions.
+      id-token: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # No `password` field — the action requests an OIDC token from
+        # GitHub and exchanges it for a short-lived PyPI credential.
+        with:
+          print-hash: true
