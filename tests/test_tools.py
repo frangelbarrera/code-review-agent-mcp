@@ -1,6 +1,9 @@
 """Tests for the MCP tool handlers (with mocked LLM calls)."""
 
 import asyncio
+import os
+import subprocess
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -14,6 +17,7 @@ from code_review_agent.tools.review import (
     _detect_language,
     _line_number_code,
     _build_review_prompt,
+    register_review_tools,
 )
 
 
@@ -152,3 +156,74 @@ class TestHarshnessModifiersCoverage:
     def test_kernel_maintainer_modifier_exists(self):
         assert "kernel-maintainer" in HARSHNESS_MODIFIERS
         assert "KERNEL-MAINTAINER" in HARSHNESS_MODIFIERS["kernel-maintainer"]
+
+
+def _init_git_repo(path: Path) -> str:
+    """Create a tiny git repo with one commit and return the HEAD ref.
+
+    Used by review_commit regression tests so they exercise the real
+    subprocess path instead of mocking git out.
+    """
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
+    (path / "f.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "."], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=path, check=True)
+    return "HEAD"
+
+
+class TestReviewCommitGitRevision:
+    """Regression: git show must treat commit_ref as a revision, not a pathspec.
+
+    Previously the command was ``git show ... -- <ref>`` which silently
+    turned <ref> into a pathspec and returned empty output for every
+    commit. The fix places ``--`` AFTER the ref.
+    """
+
+    def test_real_commit_returns_nonempty_diff(self, tmp_path, monkeypatch):
+        """A real commit ref must produce a non-empty diff.
+
+        Regression: previously the ref was placed after `--`, making git
+        treat it as a pathspec and return empty output for every commit.
+        """
+        monkeypatch.chdir(tmp_path)
+        _init_git_repo(tmp_path)
+
+        cmd = [
+            "git", "-C", str(tmp_path), "show",
+            "--no-ext-diff", "--no-textconv",
+            "HEAD", "--",
+        ]
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True,
+            env={"PATH": os.environ["PATH"], "HOME": str(tmp_path),
+                 "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"},
+        )
+        # The fix requires non-empty stdout for a real commit
+        assert proc.returncode == 0, f"git show failed: {proc.stderr}"
+        assert len(proc.stdout) > 0, (
+            "git show returned empty stdout for HEAD — the ref was likely "
+            "treated as a pathspec (regression of the `--` placement bug)"
+        )
+        assert "diff --git a/f.py b/f.py" in proc.stdout
+
+    def test_nonexistent_ref_is_rejected(self, tmp_path, monkeypatch):
+        """A nonexistent ref must produce a non-zero exit so the tool reports
+        the failure instead of silently returning 'empty commit'."""
+        monkeypatch.chdir(tmp_path)
+        _init_git_repo(tmp_path)
+
+        cmd = [
+            "git", "-C", str(tmp_path), "show",
+            "--no-ext-diff", "--no-textconv",
+            "deadbeef", "--",
+        ]
+        proc = subprocess.run(
+            cmd, capture_output=True, text=True,
+            env={"PATH": os.environ["PATH"], "HOME": str(tmp_path),
+                 "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"},
+        )
+        assert proc.returncode != 0, (
+            "git show accepted a nonexistent ref — silent fail-open regression"
+        )

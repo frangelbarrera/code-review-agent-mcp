@@ -455,14 +455,18 @@ def register_review_tools(server: Server) -> None:
         # Run git in thread (non-blocking) with sandboxed env
         # --no-ext-diff prevents .git/config diff.external RCE
         # --no-textconv prevents core.textconv RCE
-        # -- separates ref from options
+        # commit_ref is placed BEFORE '--' so git treats it as a revision;
+        # anything after '--' is a pathspec. Placing '--' before the ref
+        # silently turns the ref into a pathspec, returning empty output
+        # (or, if a file with the same name exists, the wrong diff).
+        # validate_git_ref already rejects refs starting with '-'.
         try:
             result = await asyncio.to_thread(
                 subprocess.run,
                 [
                     "git", "-C", str(repo_path), "show",
                     "--no-ext-diff", "--no-textconv",
-                    "--", commit_ref,
+                    commit_ref, "--",
                 ],
                 capture_output=True,
                 text=True,
