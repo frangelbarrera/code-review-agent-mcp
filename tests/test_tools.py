@@ -78,7 +78,13 @@ class TestLLMCallMocking:
 
     @pytest.mark.asyncio
     async def test_call_llm_via_sampling_handles_error(self):
-        """When sampling fails, return a fallback message."""
+        """When sampling fails, return a fallback message that cannot be
+        mistaken for a clean review.
+
+        Regression: previously the fallback returned ``**CLEAN**`` which a
+        CI parser could interpret as "approved". The fallback must use
+        ``**CRITICAL**`` and explicitly state the code was NOT reviewed.
+        """
         from code_review_agent.tools.review import _call_llm_via_sampling
 
         # Create a mock server that raises an exception
@@ -88,8 +94,44 @@ class TestLLMCallMocking:
         )
 
         result = await _call_llm_via_sampling(mock_server, "system", "user")
-        assert "Unable to review" in result
-        assert "sampling not available" in result.lower()
+        # Must signal failure, never a clean verdict
+        assert "**CRITICAL**" in result
+        assert "**CLEAN**" not in result
+        assert "NOT reviewed" in result
+        assert "Do not merge" in result
+        # Must not leak the raw exception message (regression guard for LOW #6)
+        assert "No LLM available" not in result
+
+    @pytest.mark.asyncio
+    async def test_call_llm_via_sampling_handles_timeout(self):
+        """Timeout must also produce a CRITICAL fallback, not CLEAN."""
+        import asyncio as _asyncio
+        from code_review_agent.tools.review import _call_llm_via_sampling
+
+        mock_server = MagicMock()
+
+        async def _slow(*args, **kwargs):
+            await _asyncio.sleep(10)
+
+        mock_server.request_context.session.request = AsyncMock(side_effect=_slow)
+
+        # Patch the timeout to 0.1s so the test runs fast
+        import code_review_agent.tools.review as review_mod
+        original_wait_for = _asyncio.wait_for
+
+        def fast_wait_for(coro, timeout):
+            return original_wait_for(coro, 0.1)
+
+        _asyncio.wait_for = fast_wait_for
+        try:
+            result = await _call_llm_via_sampling(mock_server, "system", "user")
+        finally:
+            _asyncio.wait_for = original_wait_for
+
+        assert "**CRITICAL**" in result
+        assert "**CLEAN**" not in result
+        assert "NOT reviewed" in result
+        assert "Do not merge" in result
 
 
 class TestHarshnessModifiersCoverage:

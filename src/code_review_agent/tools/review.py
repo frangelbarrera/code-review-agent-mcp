@@ -215,17 +215,18 @@ async def _call_llm_via_sampling(server: Server, system_prompt: str, user_prompt
     except asyncio.TimeoutError:
         return (
             "## Code Review: snippet\n\n### Findings\n\n"
-            "**CLEAN** `snippet` — LLM timeout\n"
-            "LLM sampling timed out after 120 seconds.\n\n"
-            "### Verdict\n\nCannot review — LLM timeout."
+            "**CRITICAL** `llm` — LLM sampling timed out\n"
+            "LLM sampling timed out after 120 seconds. The code was NOT reviewed.\n\n"
+            "### Verdict\n\nCannot review — LLM timeout. Do not merge."
         )
     except Exception as e:
         return (
             "## Code Review: snippet\n\n### Findings\n\n"
-            f"**CLEAN** `snippet` — Unable to review\n"
-            f"LLM sampling not available: {type(e).__name__}: {e}. "
-            "Configure your MCP client (Claude Desktop, Cursor) to enable sampling.\n\n"
-            "### Verdict\n\nCannot review without LLM."
+            "**CRITICAL** `llm` — LLM sampling unavailable\n"
+            f"LLM sampling failed: {type(e).__name__}. "
+            "Configure your MCP client (Claude Desktop, Cursor) to enable sampling. "
+            "The code was NOT reviewed.\n\n"
+            "### Verdict\n\nCannot review without LLM. Do not merge."
         )
 
 
