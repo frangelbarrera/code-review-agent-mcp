@@ -76,7 +76,7 @@ Add to `claude_desktop_config.json`:
   "mcpServers": {
     "code-review-agent": {
       "command": "python",
-      "args": ["-m", "blunt_codereview.server"]
+      "args": ["-m", "code_review_agent.server"]
     }
   }
 }
@@ -88,7 +88,7 @@ Or if installed via pip:
 {
   "mcpServers": {
     "code-review-agent": {
-      "command": "blunt-codereview-mcp"
+      "command": "code-review-agent-mcp"
     }
   }
 }
@@ -103,7 +103,7 @@ Add to `.cursor/mcp.json`:
   "mcpServers": {
     "code-review-agent": {
       "command": "python",
-      "args": ["-m", "blunt_codereview.server"]
+      "args": ["-m", "code_review_agent.server"]
     }
   }
 }
@@ -189,7 +189,7 @@ pip install -e ".[dev]"
 pytest
 
 # Run tests with coverage
-pytest --cov=blunt_codereview
+pytest --cov=code_review_agent
 ```
 
 ## Benchmark snippets

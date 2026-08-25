@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - This CHANGELOG.md
 
 ### Fixed
+- **CRITICAL**: Restored Python 3.10 and 3.11 compatibility by removing nested f-strings with escapes from review prompts.
+- **CRITICAL**: Updated MCP sampling calls to use the supported session `create_message` API.
+- **HIGH**: `review_file` now refuses nested cloud credential paths and secret-bearing `.env.*` files while allowing common environment templates.
+- **HIGH**: `review_file` now opens each sandbox path component through directory descriptors to reject parent-directory symlink swaps on POSIX.
+- **MEDIUM**: Commit diff limits now measure UTF-8 bytes before content is sent to the client model.
+- **MEDIUM**: Corrected stale MCP commands, coverage targets, package paths, and the package version in project documentation.
 - **CRITICAL**: Git argument injection in `review_commit` — `commit_ref` is now validated against a strict whitelist; `--no-ext-diff` and `--no-textconv` prevent `.git/config` RCE.
 - **CRITICAL**: Path traversal in `review_file` — file access is now sandboxed to the current working directory; sensitive paths (`.ssh`, `.aws`, `.env`) are refused.
 - **HIGH**: Blocking `subprocess.run` in async function — now runs in `asyncio.to_thread`.

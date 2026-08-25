@@ -16,13 +16,13 @@ pip install -e ".[dev]"
 pytest
 
 # Run tests with coverage
-pytest --cov=blunt_codereview
+pytest --cov=code_review_agent
 ```
 
 ## Project Structure
 
 ```
-src/blunt_codereview/
+src/code_review_agent/
 ├── __init__.py
 ├── server.py              # MCP server entry point
 ├── security.py            # Input validation & sandboxing
@@ -133,7 +133,7 @@ An MCP server runs with the user's permissions. Without sandboxing, a malicious 
 ## Release Process
 
 1. Update `CHANGELOG.md`
-2. Bump version in `pyproject.toml` and `src/blunt_codereview/__init__.py`
+2. Bump version in `pyproject.toml` and `src/code_review_agent/__init__.py`
 3. Create a git tag: `git tag v0.X.Y`
 4. Push the tag: `git push origin v0.X.Y`
 5. Create a GitHub Release — the publish workflow will auto-publish to PyPI
