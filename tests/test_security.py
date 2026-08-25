@@ -9,8 +9,6 @@ Verifies that:
 """
 
 import os
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -22,6 +20,7 @@ from code_review_agent.security import (
     get_safe_git_env,
     MAX_FILE_SIZE,
     SENSITIVE_PATH_PATTERNS,
+    open_file_for_review,
 )
 
 
@@ -138,6 +137,25 @@ class TestValidateFilePath:
         monkeypatch.setenv("BLUNT_REVIEW_ALLOW_ABSOLUTE", "1")
         with pytest.raises(SecurityError, match="sensitive path"):
             validate_file_path(".env")
+
+    @pytest.mark.parametrize(
+        "relative_path",
+        [
+            ".env.production",
+            ".config/aws/credentials",
+            ".config/gcloud/application_default_credentials.json",
+        ],
+    )
+    def test_rejects_sensitive_config_variants(
+        self, relative_path, monkeypatch, tmp_path
+    ):
+        target = tmp_path / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("SYNTHETIC_SECRET=1\n")
+        monkeypatch.chdir(tmp_path)
+
+        with pytest.raises(SecurityError, match="sensitive path"):
+            validate_file_path(relative_path)
 
     def test_rejects_etc_passwd(self, monkeypatch):
         monkeypatch.setenv("BLUNT_REVIEW_ALLOW_ABSOLUTE", "1")
@@ -264,8 +282,8 @@ class TestValidateFilePath:
 class TestReadFileToctouSafe:
     """Verify the TOCTOU-safe read helper used by review_file.
 
-    These tests exercise the os.open(O_NOFOLLOW) + os.fstat + os.fdopen
-    path directly, without spinning up a full MCP session.
+    These tests exercise the descriptor-anchored open helper used by
+    review_file, without spinning up a full MCP session.
     """
 
     def _read_safe(self, file_path):
@@ -273,7 +291,7 @@ class TestReadFileToctouSafe:
         import stat as _stat
         fd = None
         try:
-            fd = os.open(file_path, os.O_RDONLY | os.O_NOFOLLOW)
+            fd = open_file_for_review(file_path)
         except OSError as e:
             raise PermissionError(str(e)) from e
         try:
@@ -292,24 +310,27 @@ class TestReadFileToctouSafe:
             if fd is not None:
                 os.close(fd)
 
-    def test_reads_regular_file(self, tmp_path):
+    def test_reads_regular_file(self, tmp_path, monkeypatch):
         f = tmp_path / "x.py"
         f.write_text("print('hi')\n")
+        monkeypatch.chdir(tmp_path)
         assert self._read_safe(f) == "print('hi')\n"
 
-    def test_rejects_symlink(self, tmp_path):
+    def test_rejects_symlink(self, tmp_path, monkeypatch):
         """O_NOFOLLOW must reject any symlink, even inside the sandbox."""
         target = tmp_path / "target.txt"
         target.write_text("secret\n")
         link = tmp_path / "link.py"
         os.symlink(target, link)
+        monkeypatch.chdir(tmp_path)
         with pytest.raises(PermissionError):
             self._read_safe(link)
 
-    def test_rejects_directory(self, tmp_path):
+    def test_rejects_directory(self, tmp_path, monkeypatch):
         """Opening a directory must fail (or be rejected by fstat)."""
         d = tmp_path / "subdir"
         d.mkdir()
+        monkeypatch.chdir(tmp_path)
         # On Linux, opening a directory with O_RDONLY succeeds but fstat
         # identifies it as S_IFDIR, so the helper must reject it.
         try:
@@ -319,6 +340,23 @@ class TestReadFileToctouSafe:
             # Some kernels refuse to open dirs even with O_RDONLY; that's
             # also acceptable.
             pass
+
+    @pytest.mark.skipif(os.name != "posix", reason="requires POSIX dir_fd support")
+    def test_rejects_parent_directory_symlink_swap(self, tmp_path, monkeypatch):
+        allowed = tmp_path / "allowed"
+        outside = tmp_path / "outside"
+        allowed.mkdir()
+        outside.mkdir()
+        (allowed / "review.py").write_text("safe\n")
+        (outside / "review.py").write_text("synthetic secret\n")
+        monkeypatch.chdir(tmp_path)
+
+        validated = validate_file_path("allowed/review.py")
+        allowed.rename(tmp_path / "allowed-original")
+        os.symlink(outside, allowed, target_is_directory=True)
+
+        with pytest.raises(PermissionError):
+            self._read_safe(validated)
 
 
 class TestValidateRepoPath:

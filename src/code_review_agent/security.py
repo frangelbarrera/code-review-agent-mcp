@@ -13,7 +13,6 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Optional
 
 # Maximum file size we'll review (10 MB)
 MAX_FILE_SIZE = 10 * 1024 * 1024
@@ -129,26 +128,35 @@ def validate_file_path(file_path: str) -> Path:
 
     # Check against sensitive path patterns using component-aware matching.
     # Substring matching ('pattern in resolved_str') produces false positives
-    # on legitimate paths like 'tests/etc/passwd.py' (matches '/etc/passwd')
-    # or 'app/.env.example' (matches '/.env').
+    # on legitimate paths like 'tests/etc/passwd.py'. Dotfile patterns may
+    # contain multiple components (for example '/.config/aws/'), so they
+    # must be matched as a sequence rather than as one component.
     #
-    # Two pattern families exist in SENSITIVE_PATH_PATTERNS:
-    #   * Absolute system paths: '/etc/passwd', '/proc/', '/sys/'. These
-    #     must match only at the root of the resolved path.
-    #   * Home-relative dotfile patterns: '/.ssh/', '/.env', '/.aws/'.
-    #     These must match whenever the named dotfile component appears
-    #     anywhere in the path (the user's home is just one of several
-    #     places these can live).
+    # '.env.example' is commonly a checked-in template and remains reviewable;
+    # other '.env.*' files are treated as potentially secret-bearing.
     resolved_str = str(resolved).replace("\\", "/")
     components = [c for c in resolved_str.split("/") if c]
+    safe_env_templates = {".env.example", ".env.sample", ".env.template"}
     for pattern in SENSITIVE_PATH_PATTERNS:
-        token = pattern.strip("/")
-        if not token:
+        tokens = [token for token in pattern.strip("/").split("/") if token]
+        if not tokens:
             continue
         if pattern.startswith("/."):
-            # Home-relative dotfile pattern. Match if any path component
-            # equals the pattern's token.
-            if token in components:
+            if len(tokens) == 1:
+                token = tokens[0]
+                matched = token in components
+                if token == ".env":
+                    matched = matched or any(
+                        component.startswith(".env.")
+                        and component not in safe_env_templates
+                        for component in components
+                    )
+            else:
+                matched = any(
+                    components[index:index + len(tokens)] == tokens
+                    for index in range(len(components) - len(tokens) + 1)
+                )
+            if matched:
                 raise SecurityError(
                     f"Refusing to read sensitive path (matches pattern "
                     f"'{pattern}'): {resolved_str}"
@@ -207,6 +215,55 @@ def validate_file_path(file_path: str) -> Path:
         )
 
     return resolved
+
+
+def open_file_for_review(file_path: Path) -> int:
+    """Open a validated file without following a swapped parent symlink.
+
+    On POSIX, each directory is opened relative to a descriptor rooted at the
+    current working directory. This prevents a concurrent rename-and-symlink
+    swap from redirecting a previously validated path outside the sandbox.
+    The caller owns the returned descriptor and must close it.
+    """
+    flags = os.O_RDONLY
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+
+    # Windows has no openat-style dir_fd traversal. Keep the final-component
+    # protection where available while preserving the existing behavior.
+    if os.name != "posix" or not hasattr(os, "O_DIRECTORY"):
+        return os.open(file_path, flags | nofollow)
+
+    sandbox_root = Path.cwd().resolve()
+    try:
+        relative_path = file_path.relative_to(sandbox_root)
+    except ValueError as e:
+        raise SecurityError(
+            f"File outside working directory (sandbox): {file_path}"
+        ) from e
+
+    if not relative_path.parts:
+        raise SecurityError(f"Invalid file path: {file_path}")
+
+    directory_fd = os.open(sandbox_root, flags | os.O_DIRECTORY)
+    try:
+        for component in relative_path.parts[:-1]:
+            next_directory_fd = os.open(
+                component,
+                flags | os.O_DIRECTORY | nofollow,
+                dir_fd=directory_fd,
+            )
+            os.close(directory_fd)
+            directory_fd = next_directory_fd
+
+        file_fd = os.open(
+            relative_path.name,
+            flags | nofollow,
+            dir_fd=directory_fd,
+        )
+    finally:
+        os.close(directory_fd)
+
+    return file_fd
 
 
 def validate_git_ref(commit_ref: str) -> str:
