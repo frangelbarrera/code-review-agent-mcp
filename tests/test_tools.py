@@ -1,12 +1,12 @@
 """Tests for the MCP tool handlers (with mocked LLM calls)."""
 
-import asyncio
 import os
 import subprocess
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from mcp.types import CreateMessageResult, TextContent
 
 from code_review_agent.tools.review import (
     ReviewCodeArgs,
@@ -15,10 +15,8 @@ from code_review_agent.tools.review import (
     ReviewCommitArgs,
     HARSHNESS_MODIFIERS,
     MAX_DIFF_SIZE,
-    _detect_language,
-    _line_number_code,
-    _build_review_prompt,
-    register_review_tools,
+    _call_llm_via_sampling,
+    _truncate_utf8,
 )
 
 
@@ -113,13 +111,11 @@ class TestLLMCallMocking:
         CI parser could interpret as "approved". The fallback must use
         ``**CRITICAL**`` and explicitly state the code was NOT reviewed.
         """
-        from code_review_agent.tools.review import _call_llm_via_sampling
-
-        # Create a mock server that raises an exception
+        # Create a mock server whose real session API raises an exception.
+        mock_session = MagicMock(spec=["create_message"])
+        mock_session.create_message = AsyncMock(side_effect=Exception("No LLM available"))
         mock_server = MagicMock()
-        mock_server.request_context.session.request = AsyncMock(
-            side_effect=Exception("No LLM available")
-        )
+        mock_server.request_context.session = mock_session
 
         result = await _call_llm_via_sampling(mock_server, "system", "user")
         # Must signal failure, never a clean verdict
@@ -137,17 +133,16 @@ class TestLLMCallMocking:
     async def test_call_llm_via_sampling_handles_timeout(self):
         """Timeout must also produce a CRITICAL fallback, not CLEAN."""
         import asyncio as _asyncio
-        from code_review_agent.tools.review import _call_llm_via_sampling
-
-        mock_server = MagicMock()
+        mock_session = MagicMock(spec=["create_message"])
 
         async def _slow(*args, **kwargs):
             await _asyncio.sleep(10)
 
-        mock_server.request_context.session.request = AsyncMock(side_effect=_slow)
+        mock_session.create_message = AsyncMock(side_effect=_slow)
+        mock_server = MagicMock()
+        mock_server.request_context.session = mock_session
 
         # Patch the timeout to 0.1s so the test runs fast
-        import code_review_agent.tools.review as review_mod
         original_wait_for = _asyncio.wait_for
 
         def fast_wait_for(coro, timeout):
@@ -163,6 +158,30 @@ class TestLLMCallMocking:
         assert "**CLEAN**" not in result
         assert "NOT reviewed" in result
         assert "Do not merge" in result
+
+    @pytest.mark.asyncio
+    async def test_call_llm_via_sampling_uses_session_create_message(self):
+        """The MCP session API must receive a typed create_message request."""
+        mock_session = MagicMock(spec=["create_message"])
+        mock_session.create_message = AsyncMock(
+            return_value=CreateMessageResult(
+                role="assistant",
+                content=TextContent(type="text", text="review complete"),
+                model="test-model",
+                stopReason="endTurn",
+            )
+        )
+        mock_server = MagicMock()
+        mock_server.request_context.session = mock_session
+
+        result = await _call_llm_via_sampling(mock_server, "system", "user")
+
+        assert result == "review complete"
+        mock_session.create_message.assert_awaited_once()
+        kwargs = mock_session.create_message.await_args.kwargs
+        assert kwargs["max_tokens"] == 4096
+        assert kwargs["system_prompt"] == "system"
+        assert kwargs["messages"][0].content.text == "user"
 
 
 class TestHarshnessModifiersCoverage:
@@ -259,6 +278,14 @@ class TestReviewCommitGitRevision:
 class TestReviewCommitDiffTruncation:
     """Ensure the diff passed to the LLM is capped at MAX_DIFF_SIZE."""
 
+    def test_truncate_utf8_respects_byte_limit(self):
+        payload = "😀" * MAX_DIFF_SIZE
+        truncated, original_size = _truncate_utf8(payload, MAX_DIFF_SIZE)
+
+        assert original_size == MAX_DIFF_SIZE * 4
+        assert len(truncated.encode("utf-8")) <= MAX_DIFF_SIZE
+        assert truncated == "😀" * (MAX_DIFF_SIZE // 4)
+
     def test_diff_size_constant_is_reasonable(self):
         # Sanity: MAX_DIFF_SIZE must be set and bounded (not unbounded, not 0)
         assert isinstance(MAX_DIFF_SIZE, int)
@@ -267,8 +294,8 @@ class TestReviewCommitDiffTruncation:
     def test_truncation_path_produces_notice(self, tmp_path, monkeypatch):
         """When 'git show' returns more than MAX_DIFF_SIZE bytes, the prompt
         built for the LLM must include a truncation notice."""
-        # Build a fake diff that exceeds MAX_DIFF_SIZE
-        oversized_diff = "diff --git a/x b/x\n" + ("+x\n" * (MAX_DIFF_SIZE + 1))
+        # Build a fake diff that exceeds MAX_DIFF_SIZE in UTF-8 bytes.
+        oversized_diff = "diff --git a/x b/x\n" + ("+😀\n" * (MAX_DIFF_SIZE // 2))
 
         captured = {}
 
@@ -285,11 +312,9 @@ class TestReviewCommitDiffTruncation:
         # we replicate the prompt-building logic and verify the cap is
         # applied correctly. This test guards against regressions in the
         # truncation block itself.
-        diff = oversized_diff
+        diff, original_size = _truncate_utf8(oversized_diff, MAX_DIFF_SIZE)
         truncation_notice = ""
-        if len(diff) > MAX_DIFF_SIZE:
-            original_size = len(diff)
-            diff = diff[:MAX_DIFF_SIZE]
+        if original_size > MAX_DIFF_SIZE:
             truncation_notice = (
                 f"\n\n[Note: the diff was truncated. 'git show' produced "
                 f"{original_size:,} bytes but only the first {MAX_DIFF_SIZE:,} "
@@ -303,11 +328,11 @@ class TestReviewCommitDiffTruncation:
             "Apply the review format."
         )
 
-        # The diff body in the prompt must be exactly MAX_DIFF_SIZE bytes
-        # (the slice) and the notice must mention truncation.
-        assert f"```diff\n{oversized_diff[:MAX_DIFF_SIZE]}\n```" in prompt
+        # The diff body stays within the UTF-8 byte budget and the notice
+        # reports the original byte size rather than its character count.
+        assert len(diff.encode("utf-8")) <= MAX_DIFF_SIZE
         assert "truncated" in prompt
-        assert f"{len(oversized_diff):,}" in prompt
+        assert f"{len(oversized_diff.encode('utf-8')):,}" in prompt
 
     def test_small_diff_is_not_truncated(self, tmp_path, monkeypatch):
         """A diff smaller than MAX_DIFF_SIZE must NOT include a truncation notice."""

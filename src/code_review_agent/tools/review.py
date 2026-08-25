@@ -16,23 +16,22 @@ import os
 import secrets
 import stat
 import subprocess
-from pathlib import Path
-from typing import Any
 
 from mcp.server import Server
-from mcp.types import Tool, TextContent
+from mcp.types import SamplingMessage, TextContent, Tool
 from pydantic import BaseModel, Field, field_validator
 
 from ..prompts.system_prompt import SYSTEM_PROMPT
-from ..validators.post_processor import enforce_blunt_output
 from ..security import (
+    MAX_FILE_SIZE,
     SecurityError,
+    get_safe_git_env,
+    open_file_for_review,
     validate_file_path,
     validate_git_ref,
     validate_repo_path,
-    get_safe_git_env,
-    MAX_FILE_SIZE,
 )
+from ..validators.post_processor import enforce_blunt_output
 
 
 logger = logging.getLogger("code-review-agent-mcp")
@@ -45,6 +44,15 @@ logger = logging.getLogger("code-review-agent-mcp")
 # comfortably inside the 200k context of modern clients while leaving
 # room for the system prompt and the response.
 MAX_DIFF_SIZE = 512 * 1024
+
+
+def _truncate_utf8(text: str, maximum_bytes: int) -> tuple[str, int]:
+    """Return text capped to a UTF-8 byte limit and its original byte size."""
+    encoded = text.encode("utf-8")
+    original_size = len(encoded)
+    if original_size <= maximum_bytes:
+        return text, original_size
+    return encoded[:maximum_bytes].decode("utf-8", errors="ignore"), original_size
 
 
 # ---------------------------------------------------------------------------
@@ -239,18 +247,15 @@ async def _call_llm_via_sampling(server: Server, system_prompt: str, user_prompt
     corr_id = secrets.token_hex(4)
     try:
         result = await asyncio.wait_for(
-            server.request_context.session.request(
-                "sampling/createMessage",
-                {
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": {"type": "text", "text": user_prompt},
-                        }
-                    ],
-                    "maxTokens": 4096,
-                    "systemPrompt": system_prompt,
-                },
+            server.request_context.session.create_message(
+                messages=[
+                    SamplingMessage(
+                        role="user",
+                        content=TextContent(type="text", text=user_prompt),
+                    )
+                ],
+                max_tokens=4096,
+                system_prompt=system_prompt,
             ),
             timeout=120.0,
         )
@@ -413,7 +418,7 @@ def register_review_tools(server: Server) -> None:
                 return [TextContent(type="text", text=f"Unknown tool: {name}.")]
         except SecurityError as e:
             return [TextContent(type="text", text=_format_security_error(e))]
-        except Exception as e:
+        except Exception:
             corr_id = secrets.token_hex(4)
             logger.exception("tool '%s' error [corr=%s]", name, corr_id)
             return [TextContent(
@@ -461,7 +466,7 @@ def register_review_tools(server: Server) -> None:
         def _read_safe() -> str:
             fd = None
             try:
-                fd = os.open(file_path, os.O_RDONLY | os.O_NOFOLLOW)
+                fd = open_file_for_review(file_path)
             except OSError as e:
                 # ELOOP = "too many levels of symbolic links" (O_NOFOLLOW hit
                 # a symlink). Treat as permission denied.
@@ -493,7 +498,7 @@ def register_review_tools(server: Server) -> None:
                 type="text",
                 text=f"## Code Review: {file_path.name}\n\n### Findings\n\n**CRITICAL** `{file_path.name}` — Permission denied\n\n### Verdict\n\nCannot read file.",
             )]
-        except OSError as e:
+        except OSError:
             return [TextContent(
                 type="text",
                 text=f"## Code Review: {file_path.name}\n\n### Findings\n\n**CRITICAL** `{file_path.name}` — Read error (file unreadable). See server logs for details.\n\n### Verdict\n\nCannot read file.",
@@ -524,9 +529,10 @@ def register_review_tools(server: Server) -> None:
             )]
         harshness_mod = HARSHNESS_MODIFIERS.get(args.harshness, HARSHNESS_MODIFIERS["standard"])
         system = SYSTEM_PROMPT + harshness_mod
+        diff_block = f"```diff\n{args.diff}\n```"
         user_prompt = (
             "Review the following git diff. Focus on what changed.\n\n"
-            f"{_wrap_untrusted(f'```diff\n{args.diff}\n```')}\n\n"
+            f"{_wrap_untrusted(diff_block)}\n\n"
             "Apply the review format. Every finding needs a severity label, line citation, and fix."
         )
         raw_output = await _call_llm_via_sampling(server, system, user_prompt)
@@ -628,10 +634,9 @@ def register_review_tools(server: Server) -> None:
         # produce megabytes of output that would exhaust the client's context
         # window and the server's memory. Tell the model (and the user) that
         # the diff was truncated so the verdict reflects only what was shown.
+        diff, original_size = _truncate_utf8(diff, MAX_DIFF_SIZE)
         truncation_notice = ""
-        if len(diff) > MAX_DIFF_SIZE:
-            original_size = len(diff)
-            diff = diff[:MAX_DIFF_SIZE]
+        if original_size > MAX_DIFF_SIZE:
             truncation_notice = (
                 f"\n\n[Note: the diff was truncated. 'git show' produced "
                 f"{original_size:,} bytes but only the first {MAX_DIFF_SIZE:,} "
@@ -641,9 +646,10 @@ def register_review_tools(server: Server) -> None:
 
         harshness_mod = HARSHNESS_MODIFIERS.get(args.harshness, HARSHNESS_MODIFIERS["standard"])
         system = SYSTEM_PROMPT + harshness_mod
+        diff_block = f"Commit ref: {commit_ref}\n```diff\n{diff}\n```"
         user_prompt = (
             "Review the following git commit. Focus on what changed.\n\n"
-            f"{_wrap_untrusted(f'Commit ref: {commit_ref}\n```diff\n{diff}\n```')}\n{truncation_notice}\n\n"
+            f"{_wrap_untrusted(diff_block)}\n{truncation_notice}\n\n"
             "Apply the review format."
         )
         raw_output = await _call_llm_via_sampling(server, system, user_prompt)
