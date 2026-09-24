@@ -1,0 +1,5 @@
+# Benchmarks contain deliberately-bad code samples for testing reviewers.
+# Each fixture is documented in the file's docstring.
+benchmarks/snippet_*.py:generic-api-key
+benchmarks/snippet_*.py:stripe-access-token
+benchmarks/snippet_*.py:aws-access-token
