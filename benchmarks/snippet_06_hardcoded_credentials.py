@@ -15,8 +15,8 @@ It MUST NOT:
 
 SNIPPET = '''import requests
 
-API_KEY = "sk-1234567890abcdef1234567890abcdef"
-STRIPE_SECRET = "sk_live_abc123def456ghi789"
+API_KEY = "sk_test_PLACEHOLDER_NOT_REAL_0000000000000000000000"
+STRIPE_SECRET = "rk_test_PLACEHOLDER_NOT_REAL_STRIPE_KEY_0000"
 
 def create_payment(amount, customer_id):
     """Create a Stripe payment."""
