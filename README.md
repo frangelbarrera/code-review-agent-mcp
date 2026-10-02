@@ -211,3 +211,7 @@ MIT
 ## Acknowledgments
 
 This project encodes the kernel maintainer tradition of code review — a methodology practiced by many senior engineers across many projects (Linux kernel, PostgreSQL, Redis, SQLite, and others). We cite the tradition, not any single practitioner.
+
+## Quality evaluation
+
+See [docs/quality-evaluation.md](docs/quality-evaluation.md).
