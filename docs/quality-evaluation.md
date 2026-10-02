@@ -1,5 +1,14 @@
-# Quality evaluation
+**Maintainer:** Frangel Raúl Crespo Barrera
+**Last verified:** 2026-10-02
+**Scope:** MCP review workflow, benchmarks, security post-processing, and repository-content handling.
 
-OWASP-related capabilities documented by this project are capabilities of the analysis workflow, not validated detection rates. Evaluation claims should identify the corpus version, task categories, methodology, and limitations.
+| Field | Current record |
+|---|---|
+| Status | CI is publishing-only; a separate validation workflow is not present. |
+| Evidence | `src/`, `benchmarks/`, `tests/test_benchmarks.py`, `tests/test_security.py`, `pyproject.toml`, `.github/workflows/publish.yml`. |
+| Standard | OWASP capabilities are declared capabilities, not validated detection rates; ASVS version is not pinned in this policy. |
+| Verification | `pytest -q`; inspect benchmark corpus version and run the existing security tests. |
+| Owner | Repository owner maintains corpus and evaluation methodology. |
+| Limitations | No precision/recall or coverage claim is made without a versioned corpus and reproducible run. |
 
-Review inputs as untrusted text: repository content must not be executed, secrets must not be returned in messages or logs, and large diffs or unbounded requests should be handled with explicit limits.
+Treat repository input as untrusted text. Do not execute input, return secrets in messages or logs, or allow unbounded diffs and requests. Add a separate validation workflow only after its commands and failure policy are agreed.
